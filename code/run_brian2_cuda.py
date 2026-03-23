@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 import pandas as pd
 from pathlib import Path
 from textwrap import dedent
-from time import time
+from time import perf_counter as time
 import traceback
 import shutil
 

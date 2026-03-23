@@ -31,7 +31,7 @@ to framework-specific runners:
 [run_nestgpu.py](code/run_nestgpu.py).
 
 ```bash
-# Run all 4 frameworks with default durations (0.1s–1000s) and trials (1, 30)
+# Run all 4 frameworks with default durations (0.1s–1000s) and trials (1,4,8,16,32)
 python main.py
 
 # Specific durations and trial count
@@ -41,7 +41,7 @@ python main.py --t_run 0.1 1 10 --n_run 1
 python main.py --nestgpu --t_run 1 --n_run 1
 
 # Combine frameworks
-python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 30
+python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 4 8 16 32
 ```
 
 Results are incrementally saved to `data/benchmark-results.csv` as each
@@ -136,7 +136,7 @@ python main.py --pytorch                      # PyTorch only
 python main.py --nestgpu                      # NEST GPU only
 python main.py --pytorch --nestgpu            # PyTorch + NEST GPU
 
-# Full benchmark suite (all durations, n_run=1 then 30, all backends)
+# Full benchmark suite (all durations, n_run=1,4,8,16,32, all backends)
 python main.py
 ```
 
@@ -150,7 +150,7 @@ python main.py
 | `--pytorch` | PyTorch (GPU/CPU) only |
 | `--nestgpu` | NEST GPU only |
 | `--t_run` | Simulation duration(s) in seconds, e.g. `--t_run 0.1 1 10` |
-| `--n_run` | Number of independent trials, e.g. `--n_run 1 30` |
+| `--n_run` | Number of independent trials, e.g. `--n_run 1 4 8 16 32` |
 | `--log_file FILE` | Write log to file (default: `data/results/benchmarks.log`) |
 | `--no_log_file` | Console output only |
 

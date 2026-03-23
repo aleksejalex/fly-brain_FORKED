@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'code'))
 
 from benchmark import (
-    BenchmarkLogger, T_RUN_VALUES_SEC, BACKEND_NAMES, EXPERIMENTS,
+    BenchmarkLogger, T_RUN_VALUES_SEC, N_RUN_VALUES, BACKEND_NAMES, EXPERIMENTS,
     get_experiment, run_benchmarks,
 )
 
@@ -111,7 +111,7 @@ def main():
         )
         t_run_display = t_run_values if t_run_values else T_RUN_VALUES_SEC
         logger.log(f"t_run values: {t_run_display}s")
-        logger.log(f"n_run values: {args.n_run or [1, 30]}")
+        logger.log(f"n_run values: {args.n_run or N_RUN_VALUES}")
         logger.log(f"Log file: {log_file if log_file else 'disabled'}")
 
         run_benchmarks(

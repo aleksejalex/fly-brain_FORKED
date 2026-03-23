@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from pathlib import Path
-from time import time
+from time import perf_counter as time
 import traceback
 
 from benchmark import (

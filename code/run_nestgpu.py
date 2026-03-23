@@ -17,7 +17,7 @@ import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from time import time
+from time import perf_counter as time
 import traceback
 
 from benchmark import (
@@ -166,176 +166,220 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None):
 # Orchestrator: spawns subprocess per trial, aggregates results
 # ============================================================================
 
-def run_single_benchmark(t_run_sec, n_run, experiment, logger,
-                         run_idx=None, total_runs=None):
-    """Run a NEST GPU benchmark by spawning one subprocess per trial."""
-    exp_name = f'nestgpu_t{t_run_sec}s_n{n_run}'
+MAX_RETRIES = 3
 
-    run_info = f"[{run_idx}/{total_runs}] " if run_idx else ""
-    logger.log_raw("")
-    logger.log_raw("=" * 80)
-    logger.log(f"{run_info}BENCHMARK: t_run={t_run_sec}s, n_run={n_run}")
-    logger.log_raw("=" * 80)
-    logger.log(f"Device: GPU (NEST GPU, user_m1 neuron)")
-    logger.log(f"Experiment: {exp_name}")
-    logger.log(f"Each trial runs in a separate subprocess (NEST GPU limitation)")
 
-    experiment_name = experiment['key']
+class _TrialError(Exception):
+    """A single NEST GPU subprocess trial failed."""
+    pass
 
-    timings = {}
+
+def _run_all_trials(t_run_sec, n_run, experiment_name, logger):
+    """Spawn n_run subprocess trials.  Raises _TrialError on any failure."""
     trial_results = []
 
-    t_total_start = time()
+    for trial in range(n_run):
+        logger.log(f"  Spawning trial {trial + 1}/{n_run}...")
 
-    try:
-        for trial in range(n_run):
-            logger.log(f"  Spawning trial {trial + 1}/{n_run}...")
+        worker_script = str(Path(__file__).resolve())
+        cmd = [
+            sys.executable, worker_script,
+            '--worker', str(t_run_sec), str(trial),
+            '--experiment', experiment_name,
+        ]
 
-            worker_script = str(Path(__file__).resolve())
-            cmd = [
-                sys.executable, worker_script,
-                '--worker', str(t_run_sec), str(trial),
-                '--experiment', experiment_name,
-            ]
+        timeout = max(t_run_sec * 20 + 120, 300)
 
-            t_trial_start = time()
-            timeout = max(t_run_sec * 20 + 120, 300)
+        try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout,
             )
-            trial_elapsed = time() - t_trial_start
+        except subprocess.TimeoutExpired:
+            raise _TrialError(
+                f"trial {trial + 1}/{n_run} timed out after {timeout:.0f}s"
+            )
 
-            if proc.returncode != 0:
+        if proc.returncode != 0:
+            stderr_tail = '\n'.join(
+                line for line in (proc.stderr or '').strip().split('\n')[-3:]
+                if line.strip()
+            )
+            raise _TrialError(
+                f"trial {trial + 1}/{n_run} exit code {proc.returncode}: "
+                f"{stderr_tail}"
+            )
+
+        trial_data = None
+        for line in proc.stdout.strip().split('\n'):
+            line = line.strip()
+            if line.startswith('{'):
+                try:
+                    trial_data = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        if trial_data is None:
+            raise _TrialError(
+                f"trial {trial + 1}/{n_run} produced no parseable JSON output"
+            )
+
+        if trial_data.get('status') != 'success':
+            raise _TrialError(
+                f"trial {trial + 1}/{n_run} reported: "
+                f"{trial_data.get('status', 'unknown')}"
+            )
+
+        trial_results.append(trial_data)
+
+        logger.log(
+            f"    Trial {trial + 1}/{n_run}: "
+            f"net={trial_data['network_creation_time']:.2f}s, "
+            f"sim={trial_data['simulation_time']:.2f}s, "
+            f"retrieval={trial_data['spike_retrieval_time']:.2f}s, "
+            f"spikes={trial_data['n_spikes']}"
+        )
+
+    return trial_results
+
+
+def run_single_benchmark(t_run_sec, n_run, experiment, logger,
+                         run_idx=None, total_runs=None):
+    """Run a NEST GPU benchmark by spawning one subprocess per trial.
+
+    If any trial fails, the entire run is discarded and retried from scratch
+    up to MAX_RETRIES times.  After all retries are exhausted the error is
+    recorded in the CSV and the process exits.
+    """
+    exp_name = f'nestgpu_t{t_run_sec}s_n{n_run}'
+    run_info = f"[{run_idx}/{total_runs}] " if run_idx else ""
+    experiment_name = experiment['key']
+
+    last_error = None
+    t_all_start = time()
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        attempt_label = (
+            f" (attempt {attempt}/{MAX_RETRIES})" if attempt > 1 else ""
+        )
+
+        logger.log_raw("")
+        logger.log_raw("=" * 80)
+        logger.log(
+            f"{run_info}BENCHMARK: t_run={t_run_sec}s, "
+            f"n_run={n_run}{attempt_label}"
+        )
+        logger.log_raw("=" * 80)
+        logger.log(f"Device: GPU (NEST GPU, user_m1 neuron)")
+        logger.log(f"Experiment: {exp_name}")
+        logger.log(
+            f"Each trial runs in a separate subprocess (NEST GPU limitation)"
+        )
+
+        t_attempt_start = time()
+
+        try:
+            trial_results = _run_all_trials(
+                t_run_sec, n_run, experiment_name, logger,
+            )
+        except _TrialError as e:
+            last_error = str(e)
+            logger.log(f"  FAILED: {e}")
+            if attempt < MAX_RETRIES:
                 logger.log(
-                    f"    Trial {trial + 1} FAILED (exit {proc.returncode})"
+                    f"  Retrying from scratch "
+                    f"(attempt {attempt + 1}/{MAX_RETRIES})..."
                 )
-                for line in (proc.stderr or '').strip().split('\n')[-5:]:
-                    if line.strip():
-                        logger.log(f"    stderr: {line}")
-                trial_results.append({
-                    'trial': trial,
-                    'status': f'error: exit code {proc.returncode}',
-                    'simulation_time': 0,
-                    'network_creation_time': 0,
-                    'spike_retrieval_time': 0,
-                    'n_spikes': 0,
-                    'n_active_neurons': 0,
-                    'total_elapsed_time': trial_elapsed,
-                })
                 continue
-
-            trial_data = None
-            for line in proc.stdout.strip().split('\n'):
-                line = line.strip()
-                if line.startswith('{'):
-                    try:
-                        trial_data = json.loads(line)
-                        break
-                    except json.JSONDecodeError:
-                        continue
-
-            if trial_data is None:
-                logger.log(f"    Trial {trial + 1}: could not parse worker JSON")
-                trial_results.append({
-                    'trial': trial, 'status': 'error: no JSON output',
-                    'simulation_time': 0, 'network_creation_time': 0,
-                    'spike_retrieval_time': 0, 'n_spikes': 0,
-                    'n_active_neurons': 0, 'total_elapsed_time': trial_elapsed,
-                })
+            break
+        except Exception as e:
+            last_error = str(e)
+            logger.log(f"  ERROR: {e}")
+            logger.log_raw(traceback.format_exc())
+            if attempt < MAX_RETRIES:
+                logger.log(
+                    f"  Retrying from scratch "
+                    f"(attempt {attempt + 1}/{MAX_RETRIES})..."
+                )
                 continue
+            break
 
-            trial_results.append(trial_data)
+        # All trials succeeded — aggregate
+        total_sim = sum(r['simulation_time'] for r in trial_results)
+        avg_net = float(np.mean(
+            [r['network_creation_time'] for r in trial_results]
+        ))
+        avg_retrieval = float(np.mean(
+            [r['spike_retrieval_time'] for r in trial_results]
+        ))
+        total_spikes = sum(r['n_spikes'] for r in trial_results)
+        n_active = max(r['n_active_neurons'] for r in trial_results)
 
-            logger.log(
-                f"    Trial {trial + 1}/{n_run}: "
-                f"net={trial_data['network_creation_time']:.2f}s, "
-                f"sim={trial_data['simulation_time']:.2f}s, "
-                f"retrieval={trial_data['spike_retrieval_time']:.2f}s, "
-                f"spikes={trial_data['n_spikes']}"
-            )
+        timings = {
+            'network_creation_total': avg_net,
+            'device_build': 0.0,
+            'simulation_total': total_sim,
+            'simulation_avg_per_trial': total_sim / n_run,
+            'spike_retrieval_avg': avg_retrieval,
+            'total_elapsed': time() - t_attempt_start,
+        }
 
-        # ---- Aggregate ----
-        successful = [r for r in trial_results if r.get('status') == 'success']
-        n_ok = len(successful)
+        total_simulated_time = t_run_sec * n_run
+        timings['realtime_ratio'] = (
+            total_simulated_time / total_sim
+            if total_sim > 0 else float('inf')
+        )
+        timings['realtime_ratio_total'] = (
+            total_simulated_time / timings['total_elapsed']
+            if timings['total_elapsed'] > 0 else float('inf')
+        )
 
-        if successful:
-            total_sim = sum(r['simulation_time'] for r in successful)
-            avg_net = float(np.mean([r['network_creation_time'] for r in successful]))
-            avg_retrieval = float(np.mean([r['spike_retrieval_time'] for r in successful]))
-            total_spikes = sum(r['n_spikes'] for r in successful)
-            n_active = max(r['n_active_neurons'] for r in successful)
+        logger.log_raw("")
+        logger.log_raw("-" * 60)
+        logger.log("TIMING SUMMARY")
+        logger.log_raw("-" * 60)
+        logger.log(f"  Network creation (avg): {avg_net:>10.3f}s")
+        logger.log(f"  Simulation (total):     {total_sim:>10.3f}s")
+        logger.log(f"  Simulation (avg/trial): {total_sim / n_run:>10.3f}s")
+        logger.log(f"  Spike retrieval (avg):  {avg_retrieval:>10.3f}s")
+        logger.log(f"  Total wall time:        {timings['total_elapsed']:>10.3f}s")
+        logger.log(f"  -----------------------------------------")
+        logger.log(f"  Simulated time:         {total_simulated_time:>10.1f}s ({n_run} x {t_run_sec}s)")
+        logger.log(f"  Realtime ratio (sim):   {timings['realtime_ratio']:>10.3f}x")
+        logger.log(f"  Realtime ratio (total): {timings['realtime_ratio_total']:>10.3f}x")
+        logger.log_raw("")
+        logger.log(f"  Active neurons:         {n_active:>10d}")
+        logger.log(f"  Total spikes:           {total_spikes:>10d}")
+        logger.log_raw("-" * 60)
 
-            timings['network_creation_total'] = avg_net
-            timings['device_build'] = 0.0
-            timings['simulation_total'] = total_sim
-            timings['simulation_avg_per_trial'] = total_sim / n_ok
-            timings['spike_retrieval_avg'] = avg_retrieval
-            timings['total_elapsed'] = time() - t_total_start
-
-            total_simulated_time = t_run_sec * n_ok
-            timings['realtime_ratio'] = (
-                total_simulated_time / total_sim
-                if total_sim > 0 else float('inf')
-            )
-            timings['realtime_ratio_total'] = (
-                total_simulated_time / timings['total_elapsed']
-                if timings['total_elapsed'] > 0 else float('inf')
-            )
-
-            results = {
-                't_run_sec': t_run_sec,
-                'n_run': n_run,
-                'n_active_neurons': n_active,
-                'n_spikes': total_spikes,
-                'status': 'success',
-                'timings': timings,
-            }
-
-            logger.log_raw("")
-            logger.log_raw("-" * 60)
-            logger.log("TIMING SUMMARY")
-            logger.log_raw("-" * 60)
-            logger.log(f"  Network creation (avg): {avg_net:>10.3f}s")
-            logger.log(f"  Simulation (total):     {total_sim:>10.3f}s")
-            logger.log(f"  Simulation (avg/trial): {total_sim / n_ok:>10.3f}s")
-            logger.log(f"  Spike retrieval (avg):  {avg_retrieval:>10.3f}s")
-            logger.log(f"  Total wall time:        {timings['total_elapsed']:>10.3f}s")
-            logger.log(f"  -----------------------------------------")
-            logger.log(f"  Simulated time:         {total_simulated_time:>10.1f}s ({n_ok} x {t_run_sec}s)")
-            logger.log(f"  Realtime ratio (sim):   {timings['realtime_ratio']:>10.3f}x")
-            logger.log(f"  Realtime ratio (total): {timings['realtime_ratio_total']:>10.3f}x")
-            logger.log_raw("")
-            logger.log(f"  Active neurons:         {n_active:>10d}")
-            logger.log(f"  Total spikes:           {total_spikes:>10d}")
-            logger.log_raw("-" * 60)
-        else:
-            timings['total_elapsed'] = time() - t_total_start
-            timings['device_build'] = 0.0
-            results = {
-                't_run_sec': t_run_sec,
-                'n_run': n_run,
-                'n_active_neurons': 0,
-                'n_spikes': 0,
-                'status': 'error: all trials failed',
-                'timings': timings,
-            }
-            logger.log("ERROR: all trials failed")
-
-    except Exception as e:
-        logger.log(f"ERROR: {e}")
-        logger.log_raw(traceback.format_exc())
-        timings['total_elapsed'] = time() - t_total_start
-        timings['device_build'] = 0.0
-        results = {
+        return {
             't_run_sec': t_run_sec,
             'n_run': n_run,
-            'n_active_neurons': 0,
-            'n_spikes': 0,
-            'status': f'error: {e}',
+            'n_active_neurons': n_active,
+            'n_spikes': total_spikes,
+            'status': 'success',
             'timings': timings,
         }
 
-    return results
+    # All retries exhausted — record in CSV and halt the process
+    error_msg = (
+        f"error: failed after {MAX_RETRIES} attempts — last: {last_error}"
+    )
+    result = {
+        't_run_sec': t_run_sec,
+        'n_run': n_run,
+        'n_active_neurons': 0,
+        'n_spikes': 0,
+        'status': error_msg,
+        'timings': {
+            'total_elapsed': time() - t_all_start,
+            'device_build': 0.0,
+        },
+    }
+    save_result_csv('NEST GPU', result)
+    logger.log(f"FATAL: {error_msg}")
+    logger.log("Exiting — unrecoverable benchmark failure.")
+    sys.exit(1)
 
 
 def run_all_benchmarks(t_run_values=None, n_run_values=None,

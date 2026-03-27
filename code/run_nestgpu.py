@@ -156,6 +156,24 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None):
         result['n_active_neurons'] = sum(1 for s in spk_trn if len(s) > 0)
         result['status'] = 'success'
 
+        # Save per-trial spike data to temp parquet (ms → seconds)
+        spike_rows = []
+        for neuron_idx, spike_times in enumerate(spk_trn):
+            if len(spike_times) > 0:
+                fid = df_comp.index[neuron_idx]
+                for t_ms in spike_times:
+                    spike_rows.append((t_ms / 1000.0, trial_num, fid))
+        if spike_rows:
+            path_res.mkdir(parents=True, exist_ok=True)
+            df_spikes = pd.DataFrame(
+                spike_rows, columns=['t', 'trial', 'flywire_id'],
+            )
+            spike_path = str(
+                path_res / f'nestgpu_t{t_run_sec}s_trial{trial_num}.parquet'
+            )
+            df_spikes.to_parquet(spike_path, compression='brotli')
+            result['spike_parquet'] = spike_path
+
     except Exception as e:
         result['status'] = f'error: {e}'
 
@@ -351,6 +369,21 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         logger.log(f"  Active neurons:         {n_active:>10d}")
         logger.log(f"  Total spikes:           {total_spikes:>10d}")
         logger.log_raw("-" * 60)
+
+        # Merge per-trial spike parquets into one combined file
+        trial_parquets = [
+            r['spike_parquet'] for r in trial_results
+            if r.get('spike_parquet')
+        ]
+        if trial_parquets:
+            dfs = [pd.read_parquet(p) for p in trial_parquets]
+            combined = pd.concat(dfs, ignore_index=True)
+            combined['exp_name'] = exp_name
+            combined_path = path_res / f'{exp_name}.parquet'
+            combined.to_parquet(combined_path, compression='brotli')
+            for p in trial_parquets:
+                Path(p).unlink(missing_ok=True)
+            logger.log(f"  Spike data:             {combined_path}")
 
         return {
             't_run_sec': t_run_sec,

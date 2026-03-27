@@ -48,6 +48,25 @@ Results are incrementally saved to `data/benchmark-results.csv` as each
 benchmark completes, with separate columns for setup time (loading, compilation)
 and simulation time (the always-on cost).
 
+### Ground truth comparison
+
+Brian2 (CPU) serves as the ground truth for neural accuracy: it implements the
+canonical LIF model from
+[Shiu et al. (Nature 2024)](https://www.nature.com/articles/s41586-024-07763-9),
+which achieved 91% prediction accuracy against experimental _Drosophila_ data.
+Each backend also saves per-neuron spike trains to `data/results/`, and a
+comparison script measures how closely the other backends reproduce Brian2's
+output:
+
+```bash
+python code/compare_ground_truth.py                  # default: t_run=1s, n_run=1
+python code/compare_ground_truth.py --t_run 10 --n_run 4   # longer / averaged
+```
+
+This computes active-neuron overlap (Jaccard), per-neuron firing-rate
+correlation, and spike-count ratios, and writes structured results to
+`data/ground-truth-comparison.json`.
+
 ## Installation
 
 ### Conda environment
@@ -167,6 +186,7 @@ fly-brain/
 │   ├── run_brian2_cuda.py      # Brian2 / Brian2CUDA benchmark runner
 │   ├── run_pytorch.py          # PyTorch benchmark runner (model + utils)
 │   ├── run_nestgpu.py          # NEST GPU benchmark runner (subprocess per trial)
+│   ├── compare_ground_truth.py # Compare backends against Brian2 (CPU) ground truth
 │   └── paper-brian2/           # Original paper code (not used by benchmarks)
 │       ├── model.py            # Core LIF network model (Brian2)
 │       ├── utils.py            # Analysis helpers (load_exps, get_rate)
@@ -175,7 +195,8 @@ fly-brain/
 ├── data/
 │   ├── 2025_Completeness_783.csv       # Neuron list (FlyWire v783)
 │   ├── 2025_Connectivity_783.parquet   # Synapse connectivity (FlyWire v783)
-│   ├── benchmark-results.csv       # Accumulated benchmark timings
+│   ├── benchmark-results.csv           # Accumulated benchmark timings
+│   ├── ground-truth-comparison.json   # Backend accuracy vs Brian2 (CPU)
 │   ├── sez_neurons.pickle              # SEZ neuron subset (for figures)
 │   ├── weight_coo.pkl                  # Cached sparse weights COO (gitignored)
 │   ├── weight_csr.pkl                  # Cached sparse weights CSR (gitignored)

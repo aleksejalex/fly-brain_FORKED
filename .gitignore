@@ -6,6 +6,7 @@ code/output*
 
 # Simulation results (large parquet files)
 data/results
+data/ground-truth-comparison.json
 
 # PyTorch cached weight matrices (generated from connectivity data)
 data/weight_coo.pkl

@@ -100,12 +100,11 @@ NEST GPU requires a separate build from source with a custom neuron model
 git clone https://github.com/nest/nest-gpu
 ```
 
-2. Copy the custom source files into the NEST GPU tree. The files are preserved
-   in `fly-brain-nestgpu/nestgpu_source_files/`:
+2. Copy the custom source files into the NEST GPU tree. You must replace `/path/to/nest-gpu` with your own local path:
 
 ```bash
-cp nestgpu_source_files/src/user_m1.{h,cu}    /path/to/nest-gpu/src/
-cp nestgpu_source_files/pythonlib/nestgpu.py   /path/to/nest-gpu/pythonlib/
+cp scripts/nestgpu_source_files/src/user_m1.{h,cu}    /path/to/nest-gpu/src/
+cp scripts/nestgpu_source_files/pythonlib/nestgpu.py   /path/to/nest-gpu/pythonlib/
 ```
 
    The patched `nestgpu.py` fixes weight array initialization (lines 2225-2227).
